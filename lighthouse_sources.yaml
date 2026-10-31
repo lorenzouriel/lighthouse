@@ -1,0 +1,1000 @@
+version: "0.1.0"
+
+project:
+  id: lighthouse
+  name: Lighthouse
+  country: BR
+  description: >
+    Registry of public data sources used by Lighthouse to build an auditable
+    lakehouse of Brazilian political, electoral, fiscal, procurement,
+    corporate, geographic, and socioeconomic data.
+  principles:
+    - prefer_official_sources
+    - preserve_raw_evidence
+    - retain_source_provenance
+    - make_ingestion_reproducible
+    - separate_source_facts_from_derived_signals
+    - never_treat_anomalies_as_proof_of_wrongdoing
+
+defaults:
+  enabled: true
+  country: BR
+  ingestion_mode: batch
+  landing_zone: bronze
+  raw_immutable: true
+  provenance:
+    capture:
+      - source_id
+      - dataset_id
+      - source_url
+      - retrieved_at
+      - source_updated_at
+      - checksum
+      - schema_version
+      - ingestion_run_id
+  retry:
+    max_attempts: 5
+    backoff: exponential
+
+source_tiers:
+  authoritative:
+    description: First-party public authority or official government source.
+    evidence_weight: highest
+  derived:
+    description: Repackaged or standardized data derived from authoritative sources.
+    evidence_weight: medium
+  contextual:
+    description: External source used mainly for enrichment or comparison.
+    evidence_weight: contextual
+
+domains:
+  - politicians
+  - elections
+  - legislative_activity
+  - parliamentary_expenses
+  - campaign_finance
+  - declared_assets
+  - public_spending
+  - parliamentary_amendments
+  - procurement
+  - contracts
+  - companies
+  - municipalities
+  - public_finance
+  - socioeconomic_indicators
+  - macroeconomics
+
+sources:
+
+  # ---------------------------------------------------------------------------
+  # LEGISLATIVE
+  # ---------------------------------------------------------------------------
+
+  - id: camara_deputados
+    name: Câmara dos Deputados — Dados Abertos
+    organization: Câmara dos Deputados
+    tier: authoritative
+    category: legislative
+    priority: p0
+    enabled: true
+
+    homepage: https://dadosabertos.camara.leg.br/
+    documentation: https://dadosabertos.camara.leg.br/swagger/api.html
+    api:
+      type: rest
+      base_url: https://dadosabertos.camara.leg.br/api/v2
+      authentication:
+        type: none
+      pagination:
+        type: page
+        max_items_per_request: 100
+
+    ingestion:
+      preferred_mode: hybrid
+      modes:
+        - api
+        - bulk_download
+      historical_backfill: bulk_download
+      incremental: api
+      suggested_schedule: "0 */6 * * *"
+
+    datasets:
+      - id: deputados
+        name: Deputados
+        domain: politicians
+        path: /deputados
+        format: json
+        load_strategy: snapshot
+        canonical_entities:
+          - politician
+
+      - id: deputado_detalhes
+        name: Detalhes de Deputado
+        domain: politicians
+        path_template: /deputados/{id}
+        format: json
+        load_strategy: upsert
+        canonical_entities:
+          - politician
+
+      - id: deputado_historico
+        name: Histórico Parlamentar
+        domain: politicians
+        path_template: /deputados/{id}/historico
+        format: json
+        load_strategy: append
+        canonical_entities:
+          - politician
+          - party
+
+      - id: despesas
+        name: Cota para o Exercício da Atividade Parlamentar
+        domain: parliamentary_expenses
+        path_template: /deputados/{id}/despesas
+        bulk_url_template: https://www.camara.leg.br/cotas/Ano-{year}.csv.zip
+        formats:
+          - json
+          - csv
+        historical_coverage_start: 2008
+        load_strategy: merge
+        freshness: daily
+        canonical_entities:
+          - politician
+          - expense
+          - supplier
+        signal_inputs:
+          - expense_outlier
+          - supplier_concentration
+          - expense_growth
+          - duplicate_expense
+          - unusual_supplier
+
+      - id: votacoes
+        name: Votações
+        domain: legislative_activity
+        path: /votacoes
+        format: json
+        load_strategy: append
+        canonical_entities:
+          - vote
+          - proposition
+          - politician
+
+      - id: proposicoes
+        name: Proposições
+        domain: legislative_activity
+        path: /proposicoes
+        format: json
+        load_strategy: merge
+        canonical_entities:
+          - proposition
+
+      - id: eventos
+        name: Eventos
+        domain: legislative_activity
+        path: /eventos
+        format: json
+        load_strategy: append
+
+      - id: orgaos
+        name: Órgãos Legislativos
+        domain: legislative_activity
+        path: /orgaos
+        format: json
+        load_strategy: snapshot
+
+    entity_keys:
+      politician:
+        source_key: id
+        aliases:
+          - nome
+          - nomeCivil
+          - cpf
+
+  - id: senado_federal
+    name: Senado Federal — Dados Abertos
+    organization: Senado Federal
+    tier: authoritative
+    category: legislative
+    priority: p0
+    enabled: true
+
+    homepage: https://www12.senado.leg.br/dados-abertos/
+    documentation: https://www12.senado.leg.br/dados-abertos/conjuntos
+
+    api:
+      type: web_service
+      authentication:
+        type: none
+      formats:
+        - json
+        - xml
+        - csv
+
+    ingestion:
+      preferred_mode: api
+      modes:
+        - api
+        - csv
+      suggested_schedule: "0 */6 * * *"
+
+    datasets:
+      - id: senadores
+        name: Senadores
+        domain: politicians
+        load_strategy: snapshot
+        canonical_entities:
+          - politician
+
+      - id: mandatos
+        name: Mandatos dos Senadores
+        domain: politicians
+        load_strategy: append
+        canonical_entities:
+          - politician
+          - mandate
+
+      - id: filiacao_partidaria
+        name: Filiações Partidárias
+        domain: politicians
+        load_strategy: append
+        canonical_entities:
+          - politician
+          - party
+
+      - id: votacoes
+        name: Votações dos Senadores
+        domain: legislative_activity
+        load_strategy: append
+        canonical_entities:
+          - politician
+          - vote
+          - proposition
+
+      - id: autoria_materias
+        name: Matérias de Autoria Parlamentar
+        domain: legislative_activity
+        load_strategy: append
+        canonical_entities:
+          - politician
+          - proposition
+
+      - id: relatorias
+        name: Relatorias de Matérias
+        domain: legislative_activity
+        load_strategy: append
+        canonical_entities:
+          - politician
+          - proposition
+
+  # ---------------------------------------------------------------------------
+  # ELECTIONS
+  # ---------------------------------------------------------------------------
+
+  - id: tse
+    name: Tribunal Superior Eleitoral — Dados Abertos
+    organization: Tribunal Superior Eleitoral
+    tier: authoritative
+    category: elections
+    priority: p0
+    enabled: true
+
+    homepage: https://dadosabertos.tse.jus.br/
+    documentation: https://dadosabertos.tse.jus.br/
+
+    api:
+      type: ckan
+      authentication:
+        type: none
+
+    ingestion:
+      preferred_mode: bulk_download
+      modes:
+        - ckan
+        - bulk_download
+      partition_by:
+        - election_year
+      suggested_schedule: "0 4 * * *"
+
+    datasets:
+      - id: candidatos
+        name: Candidatos
+        domain: elections
+        formats:
+          - csv
+        load_strategy: merge
+        canonical_entities:
+          - politician
+          - election
+          - party
+
+      - id: bens_candidatos
+        name: Bens Declarados de Candidatos
+        domain: declared_assets
+        formats:
+          - csv
+        load_strategy: append
+        canonical_entities:
+          - politician
+          - asset
+          - election
+        signal_inputs:
+          - asset_growth
+          - asset_category_change
+          - asset_value_outlier
+
+      - id: prestacao_contas_candidatos
+        name: Prestação de Contas Eleitorais — Candidatos
+        domain: campaign_finance
+        formats:
+          - csv
+          - txt
+        load_strategy: append
+        canonical_entities:
+          - politician
+          - campaign
+          - donation
+          - campaign_expense
+          - supplier
+        signal_inputs:
+          - campaign_supplier_concentration
+          - donation_concentration
+          - cross_source_value_mismatch
+
+      - id: prestacao_contas_partidos
+        name: Prestação de Contas Eleitorais — Partidos
+        domain: campaign_finance
+        formats:
+          - csv
+          - txt
+        load_strategy: append
+        canonical_entities:
+          - party
+          - campaign
+          - donation
+          - campaign_expense
+
+      - id: resultados
+        name: Resultados Eleitorais
+        domain: elections
+        format: csv
+        load_strategy: append
+        canonical_entities:
+          - election
+          - politician
+          - municipality
+
+      - id: boletim_urna
+        name: Boletim de Urna
+        domain: elections
+        format: csv
+        load_strategy: append
+        canonical_entities:
+          - election
+          - polling_place
+          - municipality
+
+      - id: eleitorado
+        name: Eleitorado
+        domain: elections
+        format: csv
+        load_strategy: snapshot
+        canonical_entities:
+          - municipality
+
+      - id: redes_sociais_candidatos
+        name: Redes Sociais de Candidatos
+        domain: politicians
+        format: csv
+        load_strategy: snapshot
+        canonical_entities:
+          - politician
+
+  # ---------------------------------------------------------------------------
+  # FEDERAL TRANSPARENCY / PUBLIC MONEY
+  # ---------------------------------------------------------------------------
+
+  - id: portal_transparencia
+    name: Portal da Transparência do Governo Federal
+    organization: Controladoria-Geral da União
+    tier: authoritative
+    category: public_spending
+    priority: p0
+    enabled: true
+
+    homepage: https://portaldatransparencia.gov.br/
+    documentation: https://api.portaldatransparencia.gov.br/swagger-ui/index.html
+    bulk_downloads: https://portaldatransparencia.gov.br/download-de-dados/
+
+    api:
+      type: rest
+      base_url: https://api.portaldatransparencia.gov.br/api-de-dados
+      authentication:
+        type: api_key
+        secret_env: PORTAL_TRANSPARENCIA_API_KEY
+
+    ingestion:
+      preferred_mode: hybrid
+      modes:
+        - api
+        - bulk_download
+      suggested_schedule: "0 5 * * *"
+
+    datasets:
+      - id: emendas_parlamentares
+        name: Emendas Parlamentares
+        domain: parliamentary_amendments
+        path: /emendas
+        load_strategy: merge
+        canonical_entities:
+          - politician
+          - amendment
+          - public_body
+          - municipality
+        signal_inputs:
+          - amendment_concentration
+          - beneficiary_concentration
+          - cross_source_value_mismatch
+
+      - id: despesas_publicas
+        name: Despesas Públicas
+        domain: public_spending
+        path: /despesas
+        load_strategy: append
+        canonical_entities:
+          - public_body
+          - expense
+          - beneficiary
+
+      - id: recursos_recebidos
+        name: Recursos Recebidos por Favorecido
+        domain: public_spending
+        path: /despesas/recursos-recebidos
+        load_strategy: append
+        canonical_entities:
+          - company
+          - person
+          - public_body
+          - payment
+
+      - id: licitacoes
+        name: Licitações
+        domain: procurement
+        path: /licitacoes
+        load_strategy: merge
+        canonical_entities:
+          - procurement
+          - public_body
+          - supplier
+
+      - id: contratos
+        name: Contratos
+        domain: contracts
+        load_strategy: merge
+        canonical_entities:
+          - contract
+          - public_body
+          - supplier
+
+  - id: pncp
+    name: Portal Nacional de Contratações Públicas
+    organization: Governo Federal
+    tier: authoritative
+    category: procurement
+    priority: p0
+    enabled: true
+
+    homepage: https://www.gov.br/pncp/
+    documentation: https://www.gov.br/pncp/pt-br/acesso-a-informacao/dados-abertos
+
+    api:
+      type: rest
+      authentication:
+        type: none
+
+    ingestion:
+      preferred_mode: api
+      suggested_schedule: "0 */4 * * *"
+
+    datasets:
+      - id: contratacoes
+        name: Contratações Públicas
+        domain: procurement
+        load_strategy: append
+        canonical_entities:
+          - procurement
+          - public_body
+          - supplier
+          - municipality
+
+      - id: contratos
+        name: Contratos
+        domain: contracts
+        load_strategy: merge
+        canonical_entities:
+          - contract
+          - public_body
+          - supplier
+          - municipality
+        signal_inputs:
+          - supplier_concentration
+          - repeated_supplier
+          - contract_value_outlier
+
+      - id: atas_registro_preco
+        name: Atas de Registro de Preço
+        domain: procurement
+        load_strategy: append
+
+      - id: planos_contratacoes_anuais
+        name: Planos de Contratações Anuais
+        domain: procurement
+        load_strategy: snapshot
+
+  # ---------------------------------------------------------------------------
+  # COMPANIES
+  # ---------------------------------------------------------------------------
+
+  - id: receita_federal
+    name: Receita Federal — Dados Abertos
+    organization: Receita Federal do Brasil
+    tier: authoritative
+    category: companies
+    priority: p0
+    enabled: true
+
+    homepage: https://www.gov.br/receitafederal/dados
+
+    ingestion:
+      preferred_mode: bulk_download
+      modes:
+        - bulk_download
+      suggested_schedule: "0 3 5 * *"
+
+    datasets:
+      - id: cnpj_empresas
+        name: Cadastro Nacional da Pessoa Jurídica — Empresas
+        domain: companies
+        load_strategy: snapshot
+        canonical_entities:
+          - company
+
+      - id: cnpj_estabelecimentos
+        name: CNPJ — Estabelecimentos
+        domain: companies
+        load_strategy: snapshot
+        canonical_entities:
+          - company
+          - establishment
+          - municipality
+
+      - id: cnpj_socios
+        name: CNPJ — Sócios
+        domain: companies
+        load_strategy: snapshot
+        canonical_entities:
+          - company
+          - person
+        sensitivity:
+          contains_personal_data: true
+          handling: >
+            Use only fields legally published as open data and document
+            downstream privacy and purpose limitations.
+
+      - id: cnpj_simples
+        name: CNPJ — Simples Nacional
+        domain: companies
+        load_strategy: snapshot
+        canonical_entities:
+          - company
+
+    entity_keys:
+      company:
+        preferred_key: cnpj
+
+  # ---------------------------------------------------------------------------
+  # GEOGRAPHY / SOCIOECONOMIC CONTEXT
+  # ---------------------------------------------------------------------------
+
+  - id: ibge
+    name: Instituto Brasileiro de Geografia e Estatística
+    organization: IBGE
+    tier: authoritative
+    category: socioeconomic
+    priority: p1
+    enabled: true
+
+    homepage: https://www.ibge.gov.br/
+    api_base: https://servicodados.ibge.gov.br/api/
+
+    ingestion:
+      preferred_mode: api
+      suggested_schedule: "0 6 * * 1"
+
+    datasets:
+      - id: localidades
+        name: Localidades
+        domain: municipalities
+        load_strategy: snapshot
+        canonical_entities:
+          - municipality
+          - state
+          - region
+
+      - id: populacao
+        name: População
+        domain: socioeconomic_indicators
+        load_strategy: append
+        canonical_entities:
+          - municipality
+
+      - id: pib_municipios
+        name: Produto Interno Bruto dos Municípios
+        domain: socioeconomic_indicators
+        load_strategy: append
+        canonical_entities:
+          - municipality
+
+      - id: censo
+        name: Censo Demográfico
+        domain: socioeconomic_indicators
+        load_strategy: append
+        canonical_entities:
+          - municipality
+
+      - id: sidra
+        name: SIDRA — Agregados Estatísticos
+        domain: socioeconomic_indicators
+        api_base: https://apisidra.ibge.gov.br/
+        load_strategy: append
+        canonical_entities:
+          - municipality
+          - state
+
+    entity_keys:
+      municipality:
+        preferred_key: codigo_ibge
+
+  # ---------------------------------------------------------------------------
+  # PUBLIC FINANCE
+  # ---------------------------------------------------------------------------
+
+  - id: tesouro_transparente
+    name: Tesouro Transparente
+    organization: Secretaria do Tesouro Nacional
+    tier: authoritative
+    category: public_finance
+    priority: p1
+    enabled: true
+
+    homepage: https://www.tesourotransparente.gov.br/
+    ckan_api_base: https://www.tesourotransparente.gov.br/ckan/api/3/action
+
+    ingestion:
+      preferred_mode: hybrid
+      modes:
+        - ckan
+        - api
+        - csv
+      suggested_schedule: "0 7 * * *"
+
+    datasets:
+      - id: emendas_parlamentares
+        name: Emendas Parlamentares Individuais e de Bancada
+        domain: parliamentary_amendments
+        ckan_package_id: emendas-parlamentares-individuais-e-de-bancada
+        load_strategy: append
+        canonical_entities:
+          - amendment
+          - municipality
+        reconciliation_with:
+          - portal_transparencia.emendas_parlamentares
+
+      - id: transferencias_municipios
+        name: Transferências Obrigatórias da União por Município
+        domain: public_finance
+        ckan_package_id: transferencias-obrigatorias-da-uniao-por-municipio
+        load_strategy: append
+        canonical_entities:
+          - municipality
+          - transfer
+
+      - id: dca
+        name: Declaração das Contas Anuais
+        domain: public_finance
+        ckan_package_id: api-dca-entes
+        load_strategy: append
+        canonical_entities:
+          - municipality
+          - state
+
+      - id: rreo
+        name: Relatório Resumido da Execução Orçamentária
+        domain: public_finance
+        ckan_package_id: api-rreo-entes
+        load_strategy: append
+        canonical_entities:
+          - municipality
+          - state
+
+      - id: rgf
+        name: Relatório de Gestão Fiscal
+        domain: public_finance
+        ckan_package_id: api-rgf-entes
+        load_strategy: append
+        canonical_entities:
+          - municipality
+          - state
+
+  - id: banco_central
+    name: Banco Central do Brasil — Dados Abertos
+    organization: Banco Central do Brasil
+    tier: authoritative
+    category: macroeconomics
+    priority: p2
+    enabled: true
+
+    homepage: https://dadosabertos.bcb.gov.br/
+    ingestion:
+      preferred_mode: api
+      suggested_schedule: "0 8 * * *"
+
+    datasets:
+      - id: sgs
+        name: Sistema Gerenciador de Séries Temporais
+        domain: macroeconomics
+        load_strategy: append
+        canonical_entities:
+          - economic_series
+
+      - id: taxas_juros
+        name: Taxas de Juros
+        domain: macroeconomics
+        load_strategy: append
+
+      - id: inflacao
+        name: Séries de Inflação
+        domain: macroeconomics
+        load_strategy: append
+
+  # ---------------------------------------------------------------------------
+  # DERIVED / STANDARDIZED SOURCES
+  # ---------------------------------------------------------------------------
+
+  - id: base_dos_dados
+    name: Base dos Dados
+    organization: Base dos Dados
+    tier: derived
+    category: data_aggregator
+    priority: p1
+    enabled: true
+
+    homepage: https://basedosdados.org/
+
+    ingestion:
+      preferred_mode: warehouse
+      modes:
+        - bigquery
+        - download
+      usage_policy: >
+        Use for acceleration, historical backfills, standardized datasets,
+        and validation. When a Lighthouse finding is presented as evidence,
+        retain or recover provenance to the original authoritative source.
+
+    datasets:
+      - id: br_camara_dados_abertos
+        name: Câmara dos Deputados
+        domain: legislative_activity
+
+      - id: br_senado_dados_abertos
+        name: Senado Federal
+        domain: legislative_activity
+
+      - id: br_tse_eleicoes
+        name: Eleições Brasileiras
+        domain: elections
+
+      - id: br_me_cnpj
+        name: Cadastro Nacional da Pessoa Jurídica
+        domain: companies
+
+      - id: br_ibge
+        name: IBGE
+        domain: socioeconomic_indicators
+
+  # ---------------------------------------------------------------------------
+  # CONTEXTUAL / EXTERNAL
+  # ---------------------------------------------------------------------------
+
+  - id: observatorio_comercio
+    name: Observatório do Comércio
+    organization: CNC
+    tier: contextual
+    category: economic_context
+    priority: p2
+    enabled: true
+
+    homepage: https://observatorio.portaldocomercio.org.br/
+
+    ingestion:
+      preferred_mode: discovery
+      requires_source_review: true
+
+    datasets:
+      - id: economic_indicators
+        name: Indicadores Econômicos e Territoriais
+        domain: socioeconomic_indicators
+        use_cases:
+          - contextual_enrichment
+          - regional_comparison
+          - economic_baselines
+
+# -----------------------------------------------------------------------------
+# CANONICAL ENTITY MODEL
+# -----------------------------------------------------------------------------
+
+canonical_entities:
+
+  politician:
+    id_format: br:politician:{uuid}
+    source_mappings:
+      - camara_deputados
+      - senado_federal
+      - tse
+      - portal_transparencia
+
+  party:
+    id_format: br:party:{slug}
+
+  election:
+    id_format: br:election:{year}:{scope}
+
+  company:
+    id_format: br:company:{cnpj}
+    source_mappings:
+      - receita_federal
+      - portal_transparencia
+      - pncp
+      - tse
+
+  supplier:
+    id_format: br:supplier:{normalized_identifier}
+    resolution_targets:
+      - company
+      - person
+
+  municipality:
+    id_format: br:municipality:{ibge_code}
+    source_mappings:
+      - ibge
+      - tse
+      - portal_transparencia
+      - pncp
+      - tesouro_transparente
+
+  expense:
+    id_format: br:expense:{source}:{source_record_id}
+
+  contract:
+    id_format: br:contract:{source}:{source_record_id}
+
+  proposition:
+    id_format: br:proposition:{house}:{source_record_id}
+
+# -----------------------------------------------------------------------------
+# RECONCILIATION
+# -----------------------------------------------------------------------------
+
+reconciliation_rules:
+
+  - id: parliamentary_amendment_values
+    description: Compare parliamentary amendment values across federal sources.
+    sources:
+      - portal_transparencia.emendas_parlamentares
+      - tesouro_transparente.emendas_parlamentares
+    dimensions:
+      - politician
+      - amendment
+      - municipality
+      - year
+    measures:
+      - committed_value
+      - paid_value
+    signal: cross_source_value_mismatch
+
+  - id: supplier_identity
+    description: Resolve suppliers in political spending against Receita Federal.
+    sources:
+      - camara_deputados.despesas
+      - tse.prestacao_contas_candidatos
+      - portal_transparencia.recursos_recebidos
+      - pncp.contratos
+      - receita_federal.cnpj_empresas
+    matching:
+      preferred:
+        - cnpj
+      fallback:
+        - normalized_name
+        - municipality
+
+  - id: politician_identity
+    description: Resolve the same politician across legislative and electoral systems.
+    sources:
+      - camara_deputados.deputados
+      - senado_federal.senadores
+      - tse.candidatos
+    matching:
+      preferred:
+        - cpf_hash
+        - source_crosswalk
+      fallback:
+        - normalized_name
+        - birth_date
+        - state
+        - party
+      requires_confidence_score: true
+
+# -----------------------------------------------------------------------------
+# INITIAL SIGNALS
+# -----------------------------------------------------------------------------
+
+signals:
+
+  - id: expense_outlier
+    severity_model: statistical
+    inputs:
+      - politician
+      - expense_category
+      - value
+      - period
+
+  - id: expense_growth
+    severity_model: relative_change
+
+  - id: supplier_concentration
+    severity_model: concentration
+
+  - id: repeated_supplier
+    severity_model: frequency
+
+  - id: asset_growth
+    severity_model: relative_change
+
+  - id: cross_source_value_mismatch
+    severity_model: reconciliation
+
+  - id: duplicate_expense
+    severity_model: deterministic
+
+  - id: contract_value_outlier
+    severity_model: statistical
+
+# -----------------------------------------------------------------------------
+# ROADMAP / DISCOVERY
+# -----------------------------------------------------------------------------
+
+discovery_backlog:
+
+  - id: state_assemblies
+    description: Legislative open-data portals for Brazilian state assemblies.
+    priority: p2
+
+  - id: state_transparency_portals
+    description: State-level transparency and procurement data.
+    priority: p2
+
+  - id: municipal_transparency_portals
+    description: Municipal spending, contracts, and procurement.
+    priority: p3
+
+  - id: tribunais_contas
+    description: TCU, TCE and TCM datasets relevant to audits, sanctions and public spending.
+    priority: p1
+
+  - id: diario_oficial
+    description: Federal and subnational official gazettes for appointments, contracts and acts.
+    priority: p2
+
+  - id: judicial_public_data
+    description: Public judicial datasets relevant to political entities where legally appropriate.
+    priority: p3
